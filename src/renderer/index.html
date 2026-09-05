@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Orion Launcher</title>
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+	<link rel="stylesheet" href="style.css">
+</head>
+<body>
+	<div class="orion-grid" aria-hidden="true"></div>
+
+	<header id="titlebar">
+		<div class="titlebar-left">
+			<img src="logo.png" class="titlebar-logo" alt="">
+			<span class="titlebar-title">ORION LAUNCHER</span>
+			<span id="titlebar-ver" class="titlebar-ver"></span>
+		</div>
+		<div class="titlebar-right">
+			<button type="button" class="win-btn" id="btn-minimize" title="Свернуть">─</button>
+			<button type="button" class="win-btn" id="btn-maximize" title="Развернуть">▢</button>
+			<button type="button" class="win-btn win-close" id="btn-close" title="Закрыть">✕</button>
+		</div>
+	</header>
+
+	<div id="app">
+		<div id="app-body">
+		<aside id="sidebar">
+			<div class="brand">
+				<img src="logo.png" class="brand-logo" alt="Orion">
+				<div>
+					<div class="brand-name">ORION</div>
+					<div class="brand-sub">Launcher</div>
+				</div>
+			</div>
+
+			<div class="nav-block">
+				<div class="nav-item" id="nav-home">
+					<div class="pack-text">
+						<div>Главная</div>
+						<div class="sub">новости</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="nav-block">
+				<div class="nav-label">Сборки</div>
+				<div id="pack-list" class="nav-list">
+					<div class="muted">Подключение…</div>
+				</div>
+			</div>
+
+			<div class="nav-block">
+				<div class="nav-label">Наши сервера</div>
+				<div id="server-nav" class="nav-list">
+					<div class="muted">Загружаю…</div>
+				</div>
+			</div>
+
+			<div class="nav-block grow">
+				<div class="nav-label">Каталог</div>
+				<div id="catalog-nav" class="nav-list">
+					<div class="nav-item" id="nav-catalog-browse">
+						<div class="pack-text">
+							<div>Каталог</div>
+						</div>
+					</div>
+				</div>
+				<div id="catalog-installed" class="nav-list"></div>
+			</div>
+
+			<div class="nav-block" id="online-block">
+				<div class="nav-label">Сейчас в игре</div>
+				<div id="online-list" class="nav-list">
+					<div class="muted">Никого нет</div>
+				</div>
+			</div>
+
+			<div class="sidebar-foot">
+				<div id="net-status" class="net-pill">Связь…</div>
+				<div class="nav-item" id="nav-settings">
+					<div class="pack-text">
+						<div>Настройки</div>
+						<div class="sub" id="sidebar-ver">лаунчер</div>
+					</div>
+				</div>
+			</div>
+		</aside>
+
+		<main id="content">
+			<div id="update-banner" class="update-banner hidden">
+				<span id="update-text">Доступно обновление лаунчера</span>
+				<button type="button" class="orion-btn primary" id="btn-update-now">Обновить</button>
+			</div>
+			<section id="home-screen">
+				<div class="hero card home-hero">
+					<img src="logo.png" class="hero-logo-sm" alt="">
+					<div class="hero-text">
+						<h1 class="font-orbitron">ORION</h1>
+						<p class="lead">Новости лаунчера и наша сборка. Играть — снизу.</p>
+					</div>
+				</div>
+				<div class="home-grid">
+					<div class="card news-card">
+						<div class="card-label">Что нового</div>
+						<div class="news-carousel">
+							<button type="button" class="win-btn news-nav" id="news-prev" title="Раньше">‹</button>
+							<div id="home-news" class="news-slide"><div class="muted">Загружаю…</div></div>
+							<button type="button" class="win-btn news-nav" id="news-next" title="Дальше">›</button>
+						</div>
+						<div id="news-dots" class="news-dots"></div>
+					</div>
+					<div class="card">
+						<div class="card-label">Наша сборка</div>
+						<div id="home-featured"></div>
+					</div>
+				</div>
+				<div class="card home-servers-card">
+					<div class="card-label">Наши сервера</div>
+					<p class="field-hint">Один адрес PlayIt. Если сборки нет — скачайте её здесь, иначе на сервер не пустит. Голос сменит сборку, когда никого нет.</p>
+					<div id="home-servers" class="orion-server-list"><div class="muted">Загружаю…</div></div>
+					<div id="home-progress-wrap" class="progress-wrap hidden">
+						<div class="progress-bar"><div id="home-progress-fill" class="progress-fill"></div></div>
+						<div class="progress-meta">
+							<span id="home-progress-pct">0%</span>
+							<span id="home-progress-speed">—</span>
+							<span id="home-progress-eta">—</span>
+						</div>
+						<p id="home-progress-detail" class="field-hint">Качаю сборку…</p>
+						<button type="button" class="orion-btn" id="btn-home-cancel">Отмена</button>
+					</div>
+				</div>
+			</section>
+
+			<section id="connect-screen" class="panel hidden">
+				<img src="logo.png" class="hero-logo" alt="">
+				<h1 class="font-orbitron">Нет связи с сервером</h1>
+				<p id="connect-detail" class="lead">Лаунчер не достучался до Orion. Проверьте интернет или адрес сервера в настройках.</p>
+				<div class="row">
+					<button type="button" class="orion-btn primary" id="btn-retry">Повторить</button>
+				</div>
+			</section>
+
+			<section id="pack-screen" class="hidden">
+				<div class="hero card">
+					<img src="logo.png" class="hero-logo-sm" id="pack-hero-icon" alt="">
+					<div class="hero-text">
+						<h1 id="pack-name" class="font-orbitron">DeceasedCraft</h1>
+						<p id="pack-meta" class="lead">Forge 1.20.1</p>
+					</div>
+					<div id="pack-status" class="status-pill">Проверка</div>
+				</div>
+
+				<div class="grid-2">
+					<div class="card">
+						<div class="card-label">Игрок</div>
+						<div class="player-row">
+							<img id="skin-preview" class="skin" alt="" hidden>
+							<div class="player-fields">
+								<label class="field">
+									<span>Ник</span>
+									<input id="username" type="text" maxlength="16" placeholder="3–16 символов" autocomplete="off" spellcheck="false">
+								</label>
+								<p id="nick-hint" class="field-hint">Это активный профиль. Несколько аккаунтов — снизу слева.</p>
+							</div>
+						</div>
+						<button type="button" class="orion-btn" id="btn-skin">Загрузить скин</button>
+					</div>
+
+					<div class="card">
+						<div class="card-label">Установка</div>
+						<p id="plan-text" class="lead">Считаю, что нужно скачать…</p>
+						<div id="progress-wrap" class="progress-wrap hidden">
+							<div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+							<div class="progress-meta">
+								<span id="progress-pct">0%</span>
+								<span id="progress-speed">—</span>
+								<span id="progress-eta">—</span>
+							</div>
+							<p id="progress-detail" class="field-hint">Подготовка</p>
+						</div>
+						<div class="row wrap" id="install-actions">
+							<button type="button" class="orion-btn primary" id="btn-install">Установить</button>
+							<button type="button" class="orion-btn hidden" id="btn-cancel">Отмена</button>
+							<button type="button" class="orion-btn hidden" id="btn-resume">Продолжить</button>
+							<button type="button" class="orion-btn hidden" id="btn-reinstall" title="Скачает сборку заново. Миры и настройки не удалит.">Переустановить</button>
+							<button type="button" class="orion-btn" id="btn-folder">Папка сборки</button>
+						</div>
+						<div class="row wrap hidden" id="catalog-actions">
+							<button type="button" class="orion-btn" id="btn-add-mods">Добавить моды</button>
+							<button type="button" class="orion-btn" id="btn-uninstall-catalog">Удалить сборку</button>
+							<button type="button" class="orion-btn" id="btn-folder-catalog">Папка сборки</button>
+						</div>
+						<div id="mod-list" class="mod-list hidden"></div>
+					</div>
+				</div>
+
+				<div class="launch-bar card" id="pack-launch-bar">
+					<p id="launch-hint" class="lead">После установки нажмите «Играть» снизу</p>
+					<button type="button" class="orion-btn play hidden" id="btn-play" disabled>Играть</button>
+				</div>
+			</section>
+
+			<section id="catalog-screen" class="hidden">
+				<div class="hero card">
+					<div class="hero-text">
+						<h1 class="font-orbitron">Каталог</h1>
+						<p class="lead">Modrinth, CurseForge и FTB через зеркала, которые из России обычно открываются. DeceasedCraft отдельно — каталог её не перезапишет.</p>
+					</div>
+				</div>
+				<div class="catalog-toolbar card">
+					<div class="catalog-tabs">
+						<button type="button" class="orion-btn active" id="tab-packs">Сборки</button>
+						<button type="button" class="orion-btn" id="tab-mods">Моды</button>
+						<button type="button" class="orion-btn" id="tab-res">Ресурсы</button>
+						<button type="button" class="orion-btn" id="tab-shaders">Шейдеры</button>
+						<button type="button" class="orion-btn" id="tab-data">Датапаки</button>
+						<button type="button" class="orion-btn" id="tab-vanilla">Ваниль</button>
+					</div>
+					<input id="catalog-q" type="text" placeholder="Поиск…" autocomplete="off" spellcheck="false">
+					<select id="catalog-source">
+						<option value="auto">Авто — все площадки</option>
+						<option value="modrinth">Modrinth</option>
+						<option value="curseforge">CurseForge</option>
+						<option value="ftb">FTB</option>
+					</select>
+					<select id="catalog-loader">
+						<option value="">Любой загрузчик</option>
+						<option value="fabric">Fabric</option>
+						<option value="forge">Forge</option>
+						<option value="neoforge">NeoForge</option>
+						<option value="quilt">Quilt</option>
+					</select>
+					<div id="catalog-cats" class="cat-chips">
+						<button type="button" class="chip" data-cat="adventure">RPG</button>
+						<button type="button" class="chip" data-cat="magic">Магия</button>
+						<button type="button" class="chip" data-cat="technology">Техника</button>
+						<button type="button" class="chip" data-cat="quest">Квесты</button>
+						<button type="button" class="chip" data-cat="decoration">Декор</button>
+						<button type="button" class="chip" data-cat="equipment">Снаряжение</button>
+						<button type="button" class="chip" data-cat="mobs">Мобы</button>
+						<button type="button" class="chip" data-cat="worldgen">Мир</button>
+						<button type="button" class="chip" data-cat="utility">Утилиты</button>
+						<button type="button" class="chip" data-cat="optimization">Оптимизация</button>
+						<button type="button" class="chip" data-cat="addon">Аддоны</button>
+					</div>
+					<input id="catalog-addon-for" class="hidden" type="text" placeholder="Аддон к какому моду? Jade, JEI…" autocomplete="off" spellcheck="false">
+					<label class="check catalog-compat" id="catalog-compat-wrap"><input type="checkbox" id="opt-catalog-compat"> Под мою сборку</label>
+					<select id="catalog-mod-target" class="hidden">
+						<option value="">Куда поставить мод</option>
+					</select>
+				</div>
+				<div id="cat-progress-wrap" class="progress-wrap hidden">
+					<div class="progress-bar"><div id="cat-progress-fill" class="progress-fill"></div></div>
+					<div class="progress-meta">
+						<span id="cat-progress-pct">0%</span>
+						<span id="cat-progress-speed">—</span>
+						<span id="cat-progress-eta">—</span>
+					</div>
+					<p id="cat-progress-detail" class="field-hint">Подготовка</p>
+					<button type="button" class="orion-btn" id="btn-catalog-cancel">Отмена</button>
+				</div>
+				<div id="catalog-results" class="catalog-grid"></div>
+				<div class="row" style="margin-top:12px">
+					<button type="button" class="orion-btn hidden" id="btn-catalog-more">Ещё</button>
+				</div>
+			</section>
+
+			<section id="settings-screen" class="hidden">
+				<div class="hero card">
+					<div class="hero-text">
+						<h1 class="font-orbitron">Настройки</h1>
+						<p id="settings-hero-meta" class="lead">Внешний вид, игра, Java, каталог и обновления лаунчера.</p>
+					</div>
+				</div>
+				<div class="settings-layout">
+					<div class="settings-nav" id="settings-nav">
+						<button type="button" class="orion-btn active" data-pane="appear">Вид</button>
+						<button type="button" class="orion-btn" data-pane="game">Игра</button>
+						<button type="button" class="orion-btn" data-pane="java">Java</button>
+						<button type="button" class="orion-btn" data-pane="catalog">Каталог</button>
+						<button type="button" class="orion-btn" data-pane="network">Сеть</button>
+						<button type="button" class="orion-btn" data-pane="launcher">Лаунчер</button>
+					</div>
+					<div class="settings-panes">
+						<div class="card settings-pane" data-pane="appear">
+							<div class="card-label">Тема</div>
+							<div class="theme-grid" id="theme-grid">
+								<button type="button" class="theme-card" data-theme="orion" title="Орион">Орион</button>
+								<button type="button" class="theme-card" data-theme="ember" title="Тлеющие">Тлеющие</button>
+								<button type="button" class="theme-card" data-theme="frost" title="Иней">Иней</button>
+								<button type="button" class="theme-card" data-theme="moss" title="Мох">Мох</button>
+								<button type="button" class="theme-card" data-theme="dusk" title="Сумерки">Сумерки</button>
+								<button type="button" class="theme-card" data-theme="sand" title="Песок">Песок</button>
+							</div>
+							<label class="check"><input type="checkbox" id="opt-grid" checked> Сетка на фоне</label>
+							<label class="check"><input type="checkbox" id="opt-grid-anim" checked> Анимация сетки</label>
+							<div class="row wrap" style="margin-top:14px">
+								<button type="button" class="orion-btn" id="btn-reset-appear">Сбросить вид</button>
+							</div>
+						</div>
+
+						<div class="card settings-pane hidden" data-pane="game">
+							<div class="card-label">Память и окно</div>
+							<label class="field">
+								<span>Память для Minecraft</span>
+								<div class="ram-row">
+									<input id="memory" type="range" min="2048" max="16384" step="512">
+									<strong id="memory-label">6 ГБ</strong>
+								</div>
+							</label>
+							<div class="grid-2" style="margin-top:14px">
+								<label class="field">
+									<span>Ширина окна</span>
+									<input id="game-width" type="number" min="800" max="7680" step="10" value="1280">
+								</label>
+								<label class="field">
+									<span>Высота окна</span>
+									<input id="game-height" type="number" min="480" max="4320" step="10" value="720">
+								</label>
+							</div>
+							<label class="field" style="margin-top:14px">
+								<span>После запуска игры</span>
+								<select id="opt-on-launch">
+									<option value="stay">Оставить лаунчер открытым</option>
+									<option value="minimize">Свернуть</option>
+									<option value="hide">Скрыть до закрытия игры</option>
+								</select>
+							</label>
+							<p class="field-hint">Ник и скин по-прежнему на экране сборки.</p>
+						</div>
+
+						<div class="card settings-pane hidden" data-pane="java">
+							<div class="card-label">Java</div>
+							<p id="java-info" class="lead">Ищу Java…</p>
+							<div class="row wrap">
+								<button type="button" class="orion-btn" id="btn-java-detect">Проверить</button>
+								<button type="button" class="orion-btn" id="btn-java-install">Установить Java 17</button>
+								<button type="button" class="orion-btn" id="btn-java-install-21">Java 21</button>
+								<button type="button" class="orion-btn" id="btn-java-pick">Указать вручную</button>
+							</div>
+							<p class="field-hint">17 — для Forge 1.20.1 и DeceasedCraft. 21 — для Minecraft 1.21+ и ванили 26.x.</p>
+						</div>
+
+						<div class="card settings-pane hidden" data-pane="catalog">
+							<div class="card-label">Каталог</div>
+							<label class="field">
+								<span>Источник по умолчанию</span>
+								<select id="opt-catalog-source">
+									<option value="auto">Авто — все площадки</option>
+									<option value="modrinth">Modrinth</option>
+									<option value="curseforge">CurseForge</option>
+									<option value="ftb">FTB</option>
+								</select>
+							</label>
+							<label class="field">
+								<span>Ключ CurseForge Core</span>
+								<input id="cf-key" type="text" placeholder="необязательно" autocomplete="off" spellcheck="false">
+								<p class="field-hint">Зеркало ключ не просит. Официальный API без ключа даёт 403. Ключ: console.curseforge.com → Create API Key.</p>
+							</label>
+						</div>
+
+						<div class="card settings-pane hidden" data-pane="network">
+							<div class="card-label">Сервер Orion</div>
+							<label class="field">
+								<span>Адрес</span>
+								<input id="server-url" type="text" placeholder="https://your-orion-server.example" autocomplete="off" spellcheck="false">
+								<p class="field-hint">Обычный интернет через Cloudflare. Домашняя сеть и Tailscale остаются запасными.</p>
+							</label>
+							<div class="row wrap">
+								<button type="button" class="orion-btn" id="btn-retry-net">Проверить связь</button>
+							</div>
+							<p id="settings-net-msg" class="field-hint"></p>
+						</div>
+
+						<div class="card settings-pane hidden" data-pane="launcher">
+							<div class="card-label">Orion Launcher</div>
+							<p id="launcher-ver-line" class="lead">Версия…</p>
+							<p id="update-status" class="field-hint">Нажмите «Проверить обновление», если баннер не появился.</p>
+							<div class="row wrap">
+								<button type="button" class="orion-btn primary" id="btn-check-update">Проверить обновление</button>
+								<button type="button" class="orion-btn hidden" id="btn-install-update">Установить обновление</button>
+							</div>
+							<label class="check"><input type="checkbox" id="opt-auto-update" checked> Проверять обновления при запуске</label>
+							<label class="check"><input type="checkbox" id="opt-start-windows"> Запускать вместе с Windows</label>
+							<label class="check"><input type="checkbox" id="opt-hide-online"> Скрыть блок «Сейчас в игре»</label>
+							<label class="field" style="margin-top:16px">
+								<span>Папка данных</span>
+								<div class="path-row">
+									<code id="data-root">—</code>
+									<button type="button" class="orion-btn" id="btn-data-root">Изменить</button>
+									<button type="button" class="orion-btn" id="btn-open-data">Открыть</button>
+								</div>
+								<p id="data-free" class="field-hint"></p>
+							</label>
+							<p id="settings-msg" class="field-hint"></p>
+						</div>
+					</div>
+				</div>
+			</section>
+		</main>
+		</div>
+
+		<footer id="launch-dock" class="launch-dock">
+			<button type="button" class="dock-profile" id="dock-profile" title="Профили и скины">
+				<img id="dock-skin" class="skin" alt="" hidden>
+				<span>
+					<strong id="dock-nick">Профиль</strong>
+					<small>сменить</small>
+				</span>
+			</button>
+			<div class="dock-pack-wrap" id="dock-pack-wrap">
+				<button type="button" class="dock-pack" id="dock-pack" title="Выбрать сборку">
+					<img id="dock-pack-icon" src="logo.png" alt="">
+					<span>
+						<strong id="dock-pack-name">Сборка не выбрана</strong>
+						<small>сменить ▾</small>
+					</span>
+				</button>
+				<div id="dock-pack-menu" class="dock-pack-menu hidden"></div>
+			</div>
+			<button type="button" class="orion-btn play" id="dock-play" disabled>Играть</button>
+			<div class="dock-spacer"></div>
+			<button type="button" class="orion-btn" id="dock-mods">Моды</button>
+			<button type="button" class="orion-btn" id="dock-settings">Настройки</button>
+		</footer>
+	</div>
+
+	<div id="profile-modal" class="drawer hidden">
+		<div class="drawer-panel card">
+			<div class="drawer-head">
+				<h2 class="font-orbitron">Профили</h2>
+				<button type="button" class="win-btn" id="btn-profile-close">✕</button>
+			</div>
+			<p class="lead">Несколько ников на этом компьютере. Скин привязан к нику: его увидят другие с Orion Launcher.</p>
+			<div id="profile-list" class="profile-list"></div>
+			<label class="field" style="margin-top:14px">
+				<span>Новый ник</span>
+				<input id="profile-new-nick" type="text" maxlength="16" placeholder="3–16 символов" autocomplete="off" spellcheck="false">
+			</label>
+			<div class="row wrap" style="margin-top:10px">
+				<button type="button" class="orion-btn primary" id="btn-profile-add">Добавить</button>
+				<button type="button" class="orion-btn" id="btn-profile-skin">Скин для текущего</button>
+			</div>
+			<p id="profile-msg" class="field-hint"></p>
+		</div>
+	</div>
+
+	<div id="catalog-modal" class="drawer hidden">
+		<div class="drawer-panel card catalog-modal-panel" id="catalog-modal-panel"></div>
+	</div>
+
+	<script src="renderer.js"></script>
+</body>
+</html>

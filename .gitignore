@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+.build-temp/
+.env
+.env.*
+*.log
+*.exe
+!assets/**
+settings.json
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.iml

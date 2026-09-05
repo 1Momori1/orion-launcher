@@ -1,0 +1,57 @@
+{
+  "name": "orion-launcher",
+  "version": "1.8.6",
+  "description": "Minecraft modpack launcher",
+  "author": "Orion",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1Momori1/orion-launcher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/1Momori1/orion-launcher/issues"
+  },
+  "homepage": "https://github.com/1Momori1/orion-launcher#readme",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.orion.launcher",
+    "productName": "Orion Launcher",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Orion Launcher",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
+    }
+  }
+}
