@@ -4,13 +4,20 @@ const http = require('http')
 const https = require('https')
 const crypto = require('crypto')
 const { pipeline } = require('stream/promises')
+const { Transform } = require('stream')
 
 const AGENTS = {
 	http: new http.Agent({ keepAlive: true, maxSockets: 64 }),
 	https: new https.Agent({ keepAlive: true, maxSockets: 64 }),
 }
 
-const STALL_TIMEOUT = 20000 // нет данных дольше этого — считаем зависшим
+const CONNECT_TIMEOUT_MS = 15000
+const STALL_WINDOW_MS = 15000
+const STALL_MIN_BYTES = 64 * 1024
+const CHUNK_SIZE = 12 * 1024 * 1024
+const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024
+const MAX_RETRIES_PER_CHUNK = 5
+const CANCEL_POLL_MS = 250
 
 function assertHttpUrl(url) {
 	let parsed
@@ -114,125 +121,406 @@ function request(method, url, { headers = {}, body = null, timeout = 20000, maxR
 	})
 }
 
+function throwIfCancelled(signal) {
+	if (signal && signal.cancelled) {
+		throw Object.assign(new Error('Отменено пользователем'), { cancelled: true })
+	}
+}
+
+function ensurePartFile(partPath) {
+	const fd = fs.openSync(partPath, 'a+')
+	fs.closeSync(fd)
+}
+
+function unlinkQuiet(p) {
+	try { fs.unlinkSync(p) } catch (e) {}
+}
+
+function partSize(partPath) {
+	try { return fs.statSync(partPath).size } catch (e) { return 0 }
+}
+
+function fsyncPath(p) {
+	const fd = fs.openSync(p, 'r+')
+	try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+}
+
+function downloadHeaders(headers) {
+	return { 'Accept-Encoding': 'identity', ...headers }
+}
+
+function probeContentLength(url, headers, maxRedirects = 5, method = 'HEAD') {
+	url = assertHttpUrl(url)
+	return new Promise((resolve, reject) => {
+		const reqHeaders = downloadHeaders(headers)
+		if (method === 'GET') reqHeaders.Range = 'bytes=0-0'
+		const req = libFor(url).request(url, {
+			method,
+			headers: reqHeaders,
+			agent: agentFor(url),
+		}, (res) => {
+			if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+				res.resume()
+				if (maxRedirects <= 0) return resolve({ size: null, url, acceptRanges: false })
+				const next = new URL(res.headers.location, url).toString()
+				return probeContentLength(next, headers, maxRedirects - 1, method).then(resolve, reject)
+			}
+			if (res.statusCode >= 400) {
+				res.resume()
+				if (method === 'HEAD') {
+					return probeContentLength(url, headers, maxRedirects, 'GET').then(resolve, reject)
+				}
+				return resolve({ size: null, url, acceptRanges: false })
+			}
+			const cr = res.headers['content-range']
+			const ranged = /\/(\d+)\s*$/.exec(cr || '')
+			const len = parseInt(res.headers['content-length'], 10)
+			const acceptRanges = /bytes/i.test(res.headers['accept-ranges'] || '') || res.statusCode === 206
+			// 200 на GET с Range = сервер игнорит Range и может слать весь файл — сразу рвём, не вычитываем гигабайты
+			if (method === 'GET' && res.statusCode === 200) {
+				req.destroy()
+				return resolve({
+					size: Number.isFinite(len) ? len : null,
+					url,
+					acceptRanges: false,
+				})
+			}
+			res.resume()
+			if (ranged) return resolve({ size: parseInt(ranged[1], 10), url, acceptRanges: true })
+			resolve({
+				size: Number.isFinite(len) ? len : null,
+				url,
+				acceptRanges,
+			})
+		})
+		const timer = setTimeout(() => req.destroy(Object.assign(new Error('Таймаут HEAD/probe'), { retryable: true })), CONNECT_TIMEOUT_MS)
+		req.on('error', (e) => { clearTimeout(timer); reject(e) })
+		req.on('close', () => clearTimeout(timer))
+		req.end()
+	}).catch((e) => {
+		if (method === 'HEAD' && !(e && e.cancelled)) {
+			return probeContentLength(url, headers, maxRedirects, 'GET')
+		}
+		throw e
+	})
+}
+
+function fetchRange({
+	url,
+	headers,
+	startByte,
+	endByte,
+	writeStreamFactory,
+	onBytes,
+	signal,
+	maxRedirects = 5,
+	stallMs = STALL_WINDOW_MS,
+	label = '',
+}) {
+	url = assertHttpUrl(url)
+	return new Promise((resolve, reject) => {
+		if (signal && signal.cancelled) {
+			return reject(Object.assign(new Error('Отменено пользователем'), { cancelled: true }))
+		}
+
+		const reqHeaders = downloadHeaders(headers)
+		if (startByte != null) {
+			reqHeaders.Range = `bytes=${startByte}-${endByte != null ? endByte : ''}`
+		}
+
+		let settled = false
+		let handedOff = false
+		let connectTimer = null
+		let stallInterval = null
+		let cancelInterval = null
+		let req = null
+
+		const finish = (err, value) => {
+			if (settled) return
+			settled = true
+			clearTimeout(connectTimer)
+			clearInterval(stallInterval)
+			clearInterval(cancelInterval)
+			if (err) reject(err)
+			else resolve(value)
+		}
+
+		const fail = (err, extra = {}) => {
+			finish(Object.assign(err, extra))
+		}
+
+		req = libFor(url).get(url, { headers: reqHeaders, agent: agentFor(url) }, (res) => {
+			clearTimeout(connectTimer)
+			if (req.socket) req.socket.setTimeout(0)
+
+			if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+				res.resume()
+				if (maxRedirects <= 0) return fail(new Error('Слишком много редиректов'), { retryable: false })
+				handedOff = true
+				const next = new URL(res.headers.location, url).toString()
+				return fetchRange({
+					url: next, headers, startByte, endByte, writeStreamFactory, onBytes, signal,
+					maxRedirects: maxRedirects - 1, stallMs, label,
+				}).then((v) => finish(null, v), (e) => finish(e))
+			}
+
+			if (res.statusCode === 416) {
+				res.resume()
+				return fail(Object.assign(new Error('range-reset'), { retryable: true, rangeReset: true }))
+			}
+
+			const askedRange = startByte != null
+			if (res.statusCode !== 200 && res.statusCode !== 206) {
+				res.resume()
+				// Часть CDN (forgecdn) отвечает 404 именно на Range, а полный GET живой.
+				// Иначе большой zip падает на первом чанке, не дойдя до однопоточного отката.
+				if (askedRange && (res.statusCode === 400 || res.statusCode === 404 || res.statusCode === 501)) {
+					return fail(Object.assign(new Error('no-range'), { retryable: false, noRange: true, status: res.statusCode }))
+				}
+				return fail(
+					new Error(`HTTP ${res.statusCode} при загрузке${label ? ': ' + label : ''}`),
+					{ retryable: res.statusCode >= 500 || res.statusCode === 429 || res.statusCode === 404, status: res.statusCode }
+				)
+			}
+			const gotRange = res.statusCode === 206
+			if (askedRange && !gotRange && startByte > 0) {
+				res.resume()
+				return fail(Object.assign(new Error('no-range'), { retryable: false, noRange: true }))
+			}
+			if (gotRange && startByte != null) {
+				const cr = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(res.headers['content-range'] || '')
+				if (!cr || parseInt(cr[1], 10) !== startByte) {
+					res.resume()
+					return fail(Object.assign(new Error('no-range'), { retryable: false, noRange: true }))
+				}
+			}
+
+			let bytesSinceCheck = 0
+			let counted = 0
+			const meter = new Transform({
+				transform(chunk, _enc, cb) {
+					bytesSinceCheck += chunk.length
+					counted += chunk.length
+					if (onBytes) onBytes(chunk.length)
+					cb(null, chunk)
+				},
+			})
+
+			stallInterval = setInterval(() => {
+				if (bytesSinceCheck < STALL_MIN_BYTES) {
+					req.destroy(Object.assign(new Error('Соединение зависло (мало данных за окно)'), { retryable: true }))
+					return
+				}
+				bytesSinceCheck = 0
+			}, stallMs)
+
+			let out
+			try { out = writeStreamFactory({ gotRange, status: res.statusCode }) }
+			catch (e) {
+				res.resume()
+				return fail(e, { retryable: true })
+			}
+
+			pipeline(res, meter, out)
+				.then(() => finish(null, { gotRange, fullDownload: !gotRange, finalUrl: url, bytes: counted }))
+				.catch((e) => fail(e, { retryable: !e.cancelled }))
+		})
+
+		connectTimer = setTimeout(() => {
+			req.destroy(Object.assign(new Error('Таймаут подключения'), { retryable: true }))
+		}, CONNECT_TIMEOUT_MS)
+
+		cancelInterval = setInterval(() => {
+			if (signal && signal.cancelled) {
+				req.destroy(Object.assign(new Error('Отменено пользователем'), { cancelled: true }))
+			}
+		}, CANCEL_POLL_MS)
+
+		req.on('error', (e) => {
+			if (handedOff) return
+			fail(e, { retryable: !e.cancelled })
+		})
+	})
+}
+
+async function fetchRangeWithRetry(params, attempts = MAX_RETRIES_PER_CHUNK) {
+	let lastErr = null
+	for (let i = 0; i < attempts; i++) {
+		throwIfCancelled(params.signal)
+		try {
+			return await fetchRange(params)
+		} catch (e) {
+			if (e.cancelled || e.noRange || !e.retryable) throw e
+			lastErr = e
+			await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** i, 10000)))
+		}
+	}
+	throw lastErr
+}
+
+async function downloadSingle(url, partPath, {
+	headers, startAt, onChunk, signal, maxRedirects, stallMs,
+}) {
+	const result = await fetchRange({
+		url,
+		headers,
+		startByte: startAt > 0 ? startAt : null,
+		endByte: null,
+		writeStreamFactory: ({ gotRange }) => {
+			const appending = gotRange && startAt > 0
+			return fs.createWriteStream(partPath, appending ? { flags: 'a' } : { flags: 'w' })
+		},
+		onBytes: onChunk,
+		signal,
+		maxRedirects,
+		stallMs,
+		label: path.basename(partPath, '.part'),
+	})
+	return result
+}
+
+async function downloadChunked(url, partPath, {
+	headers, total, onChunk, signal, maxRedirects, stallMs,
+}) {
+	ensurePartFile(partPath)
+	let start = partSize(partPath)
+	if (start > total) {
+		fs.truncateSync(partPath, 0)
+		start = 0
+	}
+
+	let target = url
+	while (start < total) {
+		throwIfCancelled(signal)
+		const chunkStart = start
+		const end = Math.min(chunkStart + CHUNK_SIZE - 1, total - 1)
+		const need = end - chunkStart + 1
+
+		const result = await fetchRangeWithRetry({
+			url: target,
+			headers,
+			startByte: chunkStart,
+			endByte: end,
+			writeStreamFactory: () => fs.createWriteStream(partPath, { flags: 'r+', start: chunkStart }),
+			onBytes: onChunk,
+			signal,
+			maxRedirects,
+			stallMs,
+			label: path.basename(partPath, '.part'),
+		})
+
+		if (result.finalUrl) target = result.finalUrl
+		fsyncPath(partPath)
+
+		// CDN после редиректа часто отвечает 200 на весь файл — только с нуля,
+		// иначе смещения Range уже не сходятся и нужен однопоточный откат.
+		if (result.fullDownload) {
+			if (chunkStart !== 0) {
+				throw Object.assign(new Error('no-range'), { retryable: false, noRange: true })
+			}
+			return result
+		}
+
+		const onDisk = partSize(partPath)
+		if (!result.gotRange || result.bytes !== need || onDisk !== end + 1) {
+			throw Object.assign(new Error('chunk-short'), { retryable: true })
+		}
+		start = onDisk
+	}
+	return { finalUrl: target }
+}
+
+async function verifyDownload(partPath, destPath, {
+	expectedSha512, expectedSha256, expectedSha1, expectedSize,
+}) {
+	if (expectedSize != null) {
+		const sz = fs.statSync(partPath).size
+		if (sz !== expectedSize) {
+			unlinkQuiet(partPath)
+			throw Object.assign(new Error(`Неверный размер: ${path.basename(destPath)}`), { retryable: true })
+		}
+	}
+	const expected = expectedSha512 || expectedSha256 || expectedSha1
+	const algo = expectedSha512 ? 'sha512' : expectedSha256 ? 'sha256' : expectedSha1 ? 'sha1' : null
+	if (algo && expected) {
+		const actual = await hashFile(partPath, algo)
+		if (actual !== String(expected).toLowerCase()) {
+			unlinkQuiet(partPath)
+			throw Object.assign(new Error(`Файл повреждён при загрузке: ${path.basename(destPath)}`), { retryable: true })
+		}
+	}
+}
+
 async function downloadFile(url, destPath, {
 	headers = {},
 	expectedSha256 = null,
 	expectedSha1 = null,
 	expectedSha512 = null,
 	expectedSize = null,
-	onChunk = null,       // (bytes) => void — для общего счётчика
-	signal = null,        // { cancelled: boolean }
+	onChunk = null,
+	signal = null,
 	resume = true,
 	maxRedirects = 5,
-	stallMs = STALL_TIMEOUT,
+	stallMs = STALL_WINDOW_MS,
+	forceSingle = false,
 	attempts,
 } = {}) {
 	url = assertHttpUrl(url)
+	throwIfCancelled(signal)
 	fs.mkdirSync(path.dirname(destPath), { recursive: true })
 	const partPath = destPath + '.part'
+
+	let total = expectedSize || null
+	if (total == null && !forceSingle) {
+		try {
+			const probed = await probeContentLength(url, headers, maxRedirects)
+			if (probed.size) total = probed.size
+			if (probed.url) url = probed.url
+		} catch (e) {
+			if (e && e.cancelled) throw e
+		}
+	}
+
+	if (!resume) unlinkQuiet(partPath)
 
 	let startAt = 0
 	if (resume && fs.existsSync(partPath)) {
 		const sz = fs.statSync(partPath).size
-		// Докачиваем только если знаем, сколько всего, и не перекачали
-		if (expectedSize && sz > 0 && sz < expectedSize) startAt = sz
-		else if (sz > 0 && !expectedSize) startAt = sz
-		else fs.unlinkSync(partPath)
+		if (total && sz > 0 && sz < total) startAt = sz
+		else if (sz > 0 && !total) startAt = sz
+		else unlinkQuiet(partPath)
 	}
 
-	let target = url
-	let redirected = false
-	await new Promise((resolve, reject) => {
-		const reqHeaders = { ...headers }
-		if (startAt > 0) reqHeaders['Range'] = `bytes=${startAt}-`
+	const common = { headers, onChunk, signal, maxRedirects, stallMs }
+	const useChunks = !forceSingle && resume && total != null && total > LARGE_FILE_THRESHOLD
 
-		const req = libFor(target).get(target, { headers: reqHeaders, agent: agentFor(target), timeout: stallMs }, (res) => {
-			// Adoptium и CDN отвечают редиректами — идём по ним
-			if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-				res.resume()
-				if (maxRedirects <= 0) return reject(new Error('Слишком много редиректов'))
-				redirected = true
-				const next = new URL(res.headers.location, target).toString()
-				return downloadFile(next, destPath, {
-					headers, expectedSha256, expectedSha1, expectedSha512, expectedSize, onChunk, signal, resume,
-					maxRedirects: maxRedirects - 1, stallMs,
-				}).then(resolve, reject)
-			}
-			if (res.statusCode === 416) {
-				// Сервер говорит, что докачивать нечего — начинаем заново
-				res.resume()
-				try { fs.unlinkSync(partPath) } catch (e) {}
-				return reject(Object.assign(new Error('range-reset'), { retryable: true }))
-			}
-			if (res.statusCode !== 200 && res.statusCode !== 206) {
-				res.resume()
-				return reject(Object.assign(
-					new Error(`HTTP ${res.statusCode} при загрузке ${path.basename(destPath)}`),
-					{ retryable: res.statusCode >= 500 || res.statusCode === 429 }
-				))
-			}
-			// Сервер проигнорировал Range — пишем с нуля
-			const appending = res.statusCode === 206 && startAt > 0
-			if (startAt > 0 && !appending) startAt = 0
-
-			const out = fs.createWriteStream(partPath, appending ? { flags: 'a' } : { flags: 'w' })
-
-			let stallTimer = null
-			const resetStall = () => {
-				clearTimeout(stallTimer)
-				stallTimer = setTimeout(() => {
-					req.destroy(Object.assign(new Error('Соединение зависло'), { retryable: true }))
-				}, stallMs)
-			}
-			resetStall()
-
-			res.on('data', (chunk) => {
-				resetStall()
-				if (onChunk) onChunk(chunk.length)
-				if (signal && signal.cancelled) {
-					req.destroy(Object.assign(new Error('Отменено пользователем'), { cancelled: true }))
-				}
+	try {
+		if (useChunks) {
+			await downloadChunked(url, partPath, { ...common, total })
+		} else {
+			await downloadSingle(url, partPath, { ...common, startAt })
+		}
+	} catch (e) {
+		if (e && e.rangeReset) {
+			unlinkQuiet(partPath)
+			return downloadFile(url, destPath, {
+				headers, expectedSha256, expectedSha1, expectedSha512,
+				expectedSize: total, onChunk, signal, maxRedirects, stallMs,
+				resume: false, forceSingle: true,
 			})
-
-			pipeline(res, out)
-				.then(() => { clearTimeout(stallTimer); resolve() })
-				.catch((e) => { clearTimeout(stallTimer); reject(Object.assign(e, { retryable: !e.cancelled })) })
-		})
-
-		req.on('error', (e) => reject(Object.assign(e, { retryable: !e.cancelled })))
-		req.on('timeout', () => req.destroy(Object.assign(new Error('Таймаут соединения'), { retryable: true })))
-	})
-
-	// Редирект уже всё сделал во вложенном вызове
-	if (redirected) return
-
-	// Проверка целостности
-	if (expectedSha512) {
-		const actual = await hashFile(partPath, 'sha512')
-		if (actual !== expectedSha512) {
-			try { fs.unlinkSync(partPath) } catch (e) {}
-			throw Object.assign(new Error(`Файл повреждён при загрузке: ${path.basename(destPath)}`), { retryable: true })
 		}
-	} else if (expectedSha256) {
-		const actual = await hashFile(partPath, 'sha256')
-		if (actual !== expectedSha256) {
-			try { fs.unlinkSync(partPath) } catch (e) {}
-			throw Object.assign(new Error(`Файл повреждён при загрузке: ${path.basename(destPath)}`), { retryable: true })
+		if (e && e.noRange) {
+			unlinkQuiet(partPath)
+			return downloadFile(url, destPath, {
+				headers, expectedSha256, expectedSha1, expectedSha512,
+				expectedSize: total, onChunk, signal, maxRedirects, stallMs,
+				resume: false, forceSingle: true,
+			})
 		}
-	} else if (expectedSha1) {
-		const actual = await hashFile(partPath, 'sha1')
-		if (actual !== expectedSha1) {
-			try { fs.unlinkSync(partPath) } catch (e) {}
-			throw Object.assign(new Error(`Файл повреждён при загрузке: ${path.basename(destPath)}`), { retryable: true })
-		}
-	} else if (expectedSize != null) {
-		const sz = fs.statSync(partPath).size
-		if (sz !== expectedSize) {
-			try { fs.unlinkSync(partPath) } catch (e) {}
-			throw Object.assign(new Error(`Неверный размер: ${path.basename(destPath)}`), { retryable: true })
-		}
+		throw e
 	}
 
+	await verifyDownload(partPath, destPath, { expectedSha512, expectedSha256, expectedSha1, expectedSize: total })
 	if (fs.existsSync(destPath)) fs.unlinkSync(destPath)
 	fs.renameSync(partPath, destPath)
 }

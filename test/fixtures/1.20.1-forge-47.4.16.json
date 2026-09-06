@@ -1,0 +1,10 @@
+{
+  "id": "1.20.1-forge-47.4.16",
+  "inheritsFrom": "1.20.1",
+  "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+  "arguments": {
+    "jvm": [
+      "-DignoreList=bootstraplauncher,securejarhandler,asm-commons,asm-util,asm-analysis,asm-tree,asm,JarJarFileSystems,client-extra,fmlcore,javafmllanguage,lowcodelanguage,mclanguage,forge-,${version_name}.jar"
+    ]
+  }
+}

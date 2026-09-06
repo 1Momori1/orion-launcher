@@ -30,6 +30,7 @@ const DEFAULTS = {
 	animateGrid: true,
 	onLaunch: 'stay',
 	autoCheckUpdates: true,
+	updateChannel: 'stable',
 	catalogSource: 'auto',
 	hideOnline: false,
 	openAtLogin: false,

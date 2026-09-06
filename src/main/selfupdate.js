@@ -4,21 +4,28 @@ const { app, dialog, shell } = require('electron')
 const { downloadWithRetry, fetchJson } = require('./net')
 const { allHosts } = require('./hosts')
 
-async function probeUpdate(serverUrl) {
+async function probeUpdate(serverUrl, channel) {
 	const current = app.getVersion()
 	const hosts = allHosts(serverUrl)
+	let ch = channel
+	if (!ch) {
+		try { ch = require('./config').load().updateChannel } catch (e) { ch = 'stable' }
+	}
+	ch = ch === 'staff' ? 'staff' : 'stable'
 
 	let lastErr = null
 	for (const host of hosts) {
 		try {
-			const info = await fetchJson(`${host}/api/launcher/version`, { timeout: 6000 })
+			const q = `channel=${encodeURIComponent(ch)}&current=${encodeURIComponent(current)}`
+			const info = await fetchJson(`${host}/api/launcher/version?${q}`, { timeout: 6000 })
 			if (!info || !info.version) continue
 			return {
 				ok: true,
 				current,
 				remote: info.version,
+				channel: ch,
 				upToDate: !isNewer(info.version, current),
-				info: { ...info, _base: host },
+				info: { ...info, _base: host, _channel: ch },
 			}
 		} catch (e) {
 			lastErr = e
@@ -72,6 +79,9 @@ async function installUpdate(info, current) {
 			const parsed = new URL(info.url)
 			downloadPath = parsed.pathname
 		} catch (_) {}
+	}
+	if (info._channel && info._channel !== 'stable') {
+		downloadPath += (downloadPath.includes('?') ? '&' : '?') + 'channel=' + encodeURIComponent(info._channel)
 	}
 	const url = base ? `${base}${downloadPath}` : (info.url || `${base}/api/launcher/download`)
 

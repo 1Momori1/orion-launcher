@@ -7,6 +7,9 @@ const { downloadAssets } = require('./assets')
 const { extractZip } = require('./archive')
 const { findJava, installJava } = require('./java')
 const { offlineUUID } = require('./launcher')
+const { isFatJar, linkOrCopy } = require('./fsutil')
+const validate = require('./installvalidate')
+const { openLog } = require('./installlog')
 const crypto = require('crypto')
 
 const META_NAME = 'orion-instance.json'
@@ -520,6 +523,36 @@ function flattenArgs(list, features) {
 	return out
 }
 
+function resolveClientJar(version, dataPaths, mcVersion, log) {
+	const profile = validate.readVersionProfile(dataPaths.versions, version.id) || version
+	const expectedName = validate.expectedClientJarName(profile) || (version.id + '.jar')
+	const named = path.join(dataPaths.versions, profile.id || version.id, expectedName)
+	if (isFatJar(named)) {
+		if (log) log.write('client-jar', { expected: expectedName, actual: expectedName, method: 'exists' })
+		return { path: named, method: 'exists', expected: expectedName }
+	}
+	const vanilla = mcVersion ? path.join(dataPaths.versions, mcVersion, mcVersion + '.jar') : null
+	if (!vanilla || !isFatJar(vanilla)) {
+		if (log) log.write('client-jar-missing', { expected: expectedName, vanilla })
+		return { path: null, method: 'missing', expected: expectedName }
+	}
+	if (path.resolve(named) === path.resolve(vanilla)) {
+		if (log) log.write('client-jar', { expected: expectedName, actual: path.basename(vanilla), method: 'vanilla-same' })
+		return { path: vanilla, method: 'vanilla-same', expected: expectedName }
+	}
+	try {
+		const copied = linkOrCopy(vanilla, named)
+		if (isFatJar(named)) {
+			if (log) log.write('client-jar', { expected: expectedName, actual: expectedName, method: copied.method, reason: copied.reason || null })
+			return { path: named, method: copied.method, expected: expectedName }
+		}
+	} catch (e) {
+		if (log) log.write('client-jar-copy-fail', { expected: expectedName, error: e.message })
+	}
+	if (log) log.write('client-jar-fallback', { expected: expectedName, actual: path.basename(vanilla) })
+	return { path: vanilla, method: 'vanilla-fallback', expected: expectedName }
+}
+
 function classpathFor(version, dataPaths, mcVersion) {
 	const parts = []
 	const seen = new Set()
@@ -532,13 +565,29 @@ function classpathFor(version, dataPaths, mcVersion) {
 		seen.add(p)
 		parts.push(p)
 	}
-	const candidates = [
-		mcVersion ? path.join(dataPaths.versions, mcVersion, mcVersion + '.jar') : null,
-		path.join(dataPaths.versions, version.id, version.id + '.jar'),
-	].filter(Boolean)
-	const clientJar = candidates.find(p => fs.existsSync(p) && fs.statSync(p).size > 1000)
-	if (clientJar) parts.push(clientJar)
-	return parts.join(path.delimiter)
+	const resolved = resolveClientJar(version, dataPaths, mcVersion)
+	if (resolved.path) parts.push(resolved.path)
+	return { classpath: parts.join(path.delimiter), clientJar: resolved.path, clientMeta: resolved }
+}
+
+function patchIgnoreList(args, clientJar, log) {
+	if (!clientJar) return { added: null, ignoreList: [] }
+	const base = path.basename(clientJar)
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i]
+		if (typeof a !== 'string' || !a.startsWith('-DignoreList=')) continue
+		const items = a.slice('-DignoreList='.length).split(',').filter(Boolean)
+		let added = null
+		if (!items.includes(base)) {
+			items.push(base)
+			args[i] = '-DignoreList=' + items.join(',')
+			added = base
+		}
+		if (log) log.write('ignore-list', { expected: base, added, ignoreList: items })
+		return { added, ignoreList: items }
+	}
+	if (log) log.write('ignore-list-absent', { expected: base })
+	return { added: null, ignoreList: [] }
 }
 
 function substitute(arg, vars) {
@@ -561,7 +610,14 @@ function buildLaunchArgs(version, dataPaths, instanceDir, nativesDir, opts) {
 		is_quick_play_multiplayer: false,
 		is_quick_play_realms: false,
 	}
-	const cp = classpathFor(version, dataPaths, opts.minecraft)
+	const { classpath: cp, clientJar } = classpathFor(version, dataPaths, opts.minecraft)
+	if (opts.log) {
+		opts.log.write('classpath-client', {
+			expected: version.id + '.jar',
+			profileId: version.id,
+			actual: clientJar ? path.basename(clientJar) : null,
+		})
+	}
 	let curLauncherVer = '1.7.0'
 	try { curLauncherVer = require('electron').app.getVersion() } catch (_) {}
 	const vars = {
@@ -607,6 +663,7 @@ function buildLaunchArgs(version, dataPaths, instanceDir, nativesDir, opts) {
 	if (!args.includes('-cp') && !args.includes('-classpath')) {
 		args.push('-cp', cp)
 	}
+	patchIgnoreList(args, clientJar, opts.log)
 
 	args.push(version.mainClass)
 
@@ -699,18 +756,36 @@ async function launchCatalog(launcher, meta, opts, onEvent) {
 		writeMeta(dir, { ...meta, versionId })
 	}
 
+	const installLog = openLog(dir, 'orion-install.log')
+	try {
+		onEvent({ stage: 'starting', java: java.path, detail: 'Проверка установки…' })
+		resolveClientJar({ id: versionId }, dataPaths, meta.minecraft, installLog)
+		const pre = await validate.preflightLaunch(dataPaths, { ...meta, versionId }, dir)
+		installLog.write('preflight-ok', {
+			expectedJar: pre.layout.expectedJar,
+			actualJar: pre.layout.actualName,
+			ignoreList: pre.layout.ignoreList,
+		})
+	} catch (e) {
+		installLog.write('preflight-fail', { error: e.message, issues: e.issues || [] })
+		installLog.close()
+		try { require('./telemetry').reportQuiet(opts.serverUrl, 'launch_preflight_fail', { pack: meta.id, reason: e.message }) } catch (_) {}
+		return { error: e.message || String(e) }
+	}
+
 	const merged = await loadMergedVersion(dataPaths, versionId)
 	const nativesDir = path.join(dataPaths.natives, versionId)
 	if (!fs.existsSync(nativesDir)) {
 		await extractNatives(merged.libraries || [], dataPaths.libraries, nativesDir, null)
 	}
 
-	const args = buildLaunchArgs(merged, dataPaths, dir, nativesDir, { ...opts, minecraft: meta.minecraft })
+	const args = buildLaunchArgs(merged, dataPaths, dir, nativesDir, { ...opts, minecraft: meta.minecraft, log: installLog })
 	appendJoinArgs(args, opts)
 	fs.mkdirSync(path.join(dir, 'logs'), { recursive: true })
 	const logPath = path.join(dir, 'logs', 'orion-latest.log')
 	const logStream = fs.createWriteStream(logPath, { flags: 'w' })
 	logStream.write(`[orion-catalog] java: ${java.path} (${java.raw})\n[orion-catalog] ник: ${opts.username}\n[orion-catalog] version: ${versionId}\n\n`)
+	installLog.close()
 
 	onEvent({ stage: 'starting', java: java.path })
 
@@ -772,4 +847,10 @@ module.exports = {
 	launchCatalog,
 	ensureJava,
 	appendJoinArgs,
+	resolveClientJar,
+	classpathFor,
+	buildLaunchArgs,
+	versionJsonPath,
+	loadMergedVersion,
+	patchIgnoreList,
 }

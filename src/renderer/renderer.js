@@ -708,6 +708,7 @@ function fillSettingsFromState(cfg) {
 	if ($('opt-grid')) $('opt-grid').checked = settings.showGrid !== false
 	if ($('opt-grid-anim')) $('opt-grid-anim').checked = settings.animateGrid !== false
 	if ($('opt-auto-update')) $('opt-auto-update').checked = settings.autoCheckUpdates !== false
+	if ($('opt-update-channel')) $('opt-update-channel').value = settings.updateChannel === 'staff' ? 'staff' : 'stable'
 	if ($('opt-start-windows')) $('opt-start-windows').checked = !!settings.openAtLogin
 	if ($('opt-hide-online')) $('opt-hide-online').checked = !!settings.hideOnline
 	if ($('opt-on-launch')) $('opt-on-launch').value = settings.onLaunch || 'stay'
@@ -734,6 +735,7 @@ function bindSettings() {
 	$('opt-grid').onchange = () => patchSettings({ showGrid: $('opt-grid').checked })
 	$('opt-grid-anim').onchange = () => patchSettings({ animateGrid: $('opt-grid-anim').checked })
 	$('opt-auto-update').onchange = () => patchSettings({ autoCheckUpdates: $('opt-auto-update').checked })
+	if ($('opt-update-channel')) $('opt-update-channel').onchange = () => patchSettings({ updateChannel: $('opt-update-channel').value })
 	$('opt-start-windows').onchange = () => patchSettings({ openAtLogin: $('opt-start-windows').checked })
 	$('opt-hide-online').onchange = () => patchSettings({ hideOnline: $('opt-hide-online').checked })
 	$('opt-on-launch').onchange = () => patchSettings({ onLaunch: $('opt-on-launch').value })

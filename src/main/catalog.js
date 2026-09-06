@@ -52,27 +52,36 @@ function cached(bucket, key, fn) {
 		})
 }
 
-function cfDownloadCandidates(modId, fileId, fileName, officialUrl) {
+function encodeCfSeg(s) {
+	// encodeURIComponent не трогает ! ' ( ) * — в именах CF они встречаются,
+	// и CDN тогда отдаёт 404. Кодируем каждый сегмент пути отдельно.
+	return encodeURIComponent(String(s)).replace(/[!'()*]/g, (c) =>
+		'%' + c.charCodeAt(0).toString(16).toUpperCase()
+	)
+}
+
+function cfDownloadCandidates(modId, fileId, fileName, officialUrl, { includeMirrors = true } = {}) {
 	const id = Number(fileId)
 	const a = Math.floor(id / 1000)
 	const b = id % 1000
 	const name = String(fileName || '')
-	const enc = encodeURIComponent(name).replace(/!/g, '%21')
 	const out = []
 	if (officialUrl) out.push(String(officialUrl))
 	if (id && name) {
+		const encName = encodeCfSeg(name)
+		const aSeg = encodeCfSeg(a)
+		const bSeg = encodeCfSeg(b)
 		for (const host of [
-			'https://mediafilez.forgecdn.net/files',
 			'https://edge.forgecdn.net/files',
+			'https://mediafilez.forgecdn.net/files',
 			'https://media.forgecdn.net/files',
 		]) {
-			out.push(`${host}/${a}/${b}/${name}`)
-			if (enc !== name) out.push(`${host}/${a}/${b}/${enc}`)
+			out.push(`${host}/${aSeg}/${bSeg}/${encName}`)
 		}
 	}
-	if (modId && fileId) {
-		out.push(`https://mod.mcimirror.top/curseforge/v1/mods/${modId}/files/${fileId}/download`)
+	if (includeMirrors && modId && fileId) {
 		out.push(`https://api.curse.tools/v1/cf/mods/${modId}/files/${fileId}/download`)
+		out.push(`https://mod.mcimirror.top/curseforge/v1/mods/${modId}/files/${fileId}/download`)
 	}
 	const seen = new Set()
 	return out.filter((u) => {

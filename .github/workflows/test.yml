@@ -1,0 +1,41 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        no_symlink: ["0", "1"]
+    runs-on: ${{ matrix.os }}
+    env:
+      ORION_NO_SYMLINK: ${{ matrix.no_symlink }}
+      ORION_CLEAN_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --check src/main/mclaunch.js
+      - run: node --check src/main/cataloginstall.js
+      - run: node --check src/main/installvalidate.js
+      - run: node scripts/run-tests.js
+      - run: node scripts/smoke-catalog.js
+      - run: node scripts/clean-env.js --test ${{ matrix.no_symlink == '1' && '--no-admin' || '' }}
+
+  publish-gate:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Smoke before publish
+        run: node scripts/smoke-catalog.js

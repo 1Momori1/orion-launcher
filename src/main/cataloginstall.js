@@ -5,6 +5,8 @@ const { downloadWithRetryMirrored } = require('./mirrors')
 const { extractZip } = require('./archive')
 const catalog = require('./catalog')
 const mclaunch = require('./mclaunch')
+const validate = require('./installvalidate')
+const { openLog } = require('./installlog')
 
 const FILE_CONCURRENCY = 8
 const DL_OPTS = { attempts: 2, stallMs: 15000 }
@@ -119,7 +121,42 @@ function reportWrap(onProgress, extra) {
 	if (onProgress) onProgress(extra)
 }
 
-async function downloadListedFiles(files, destRoot, onProgress, signal, headers) {
+async function runPostInstallCheck({ paths, destDir, versionId, minecraft, files, packId, onProgress }) {
+	const log = openLog(destDir)
+	try {
+		reportWrap(onProgress, { stage: 'loader', stageLabel: 'Проверка', detail: 'Структура установки', percent: phasePercent('loader', 0.95) })
+		mclaunch.resolveClientJar({ id: versionId }, paths, minecraft, log)
+		const check = await validate.validateInstall({
+			dataPaths: paths,
+			instanceDir: destDir,
+			versionId,
+			minecraft,
+			files: files || [],
+		})
+		log.write('post-install', {
+			ok: check.ok,
+			expectedJar: check.layout.expectedJar,
+			actualJar: check.layout.actualName,
+			ignoreList: check.layout.ignoreList,
+			modsChecked: check.fileReport.checked,
+			modsHashed: check.fileReport.hashed,
+			issues: check.issues,
+		})
+		if (!check.ok) {
+			try { require('./telemetry').reportQuiet('', 'install_fail', { pack: packId, reason: validate.formatIssues(check.issues) }) } catch (_) {}
+			throw new validate.PreflightError(
+				'Установка скачалась, но проверка не прошла.\n' + validate.formatIssues(check.issues),
+				check.issues,
+			)
+		}
+		try { require('./telemetry').reportQuiet('', 'install_ok', { pack: packId, version: versionId }) } catch (_) {}
+		return check
+	} finally {
+		log.close()
+	}
+}
+
+async function downloadListedFiles(files, destRoot, onProgress, signal, headers, log) {
 	const meter = new SpeedMeter()
 	const totalBytes = files.reduce((s, f) => s + (f.size || 0), 0)
 	let doneBytes = 0
@@ -156,17 +193,33 @@ async function downloadListedFiles(files, destRoot, onProgress, signal, headers)
 		if (!ok) {
 			const urls = (f.urls || []).filter(Boolean)
 			const url = f.url || urls[0]
-			if (!url) throw new Error('Нет ссылки на файл: ' + f.path)
-			await downloadWithRetryMirrored(url, dest, {
-				headers,
-				urls,
-				expectedSha1: hashes.sha1 || null,
-				expectedSha512: hashes.sha512 || null,
-				expectedSize: f.size || null,
-				signal,
-				...DL_OPTS,
-				onChunk: (n) => { meter.add(n); doneBytes += n; report() },
-			})
+			if (!url) {
+				if (f.blocked) throw blockedModError(f)
+				throw new Error('Нет ссылки на файл: ' + f.path)
+			}
+			try {
+				const used = await downloadWithRetryMirrored(url, dest, {
+					headers,
+					urls,
+					expectedSha1: hashes.sha1 || null,
+					expectedSha512: hashes.sha512 || null,
+					expectedSize: f.size || null,
+					signal,
+					...DL_OPTS,
+					onChunk: (n) => { meter.add(n); doneBytes += n; report() },
+					onSource: (src) => {
+						if (log) log.write('mod-source', { file: f.path, ...src })
+					},
+					onSourceFail: (src) => {
+						if (log) log.write('mod-source-fail', { file: f.path, ...src })
+					},
+				})
+				if (log && used) log.write('mod-ok', { file: f.path, host: used.host, kind: used.kind, url: used.usedUrl })
+			} catch (e) {
+				if (e && e.cancelled) throw e
+				if (f.blocked) throw blockedModError(f)
+				throw e
+			}
 		} else if (f.size) {
 			doneBytes += f.size
 		}
@@ -207,30 +260,58 @@ async function installMrpack(mrpackPath, destDir, onProgress, signal) {
 		})
 	}
 	fs.mkdirSync(destDir, { recursive: true })
-	await downloadListedFiles(files, destDir, onProgress, signal, catalog.headers())
+	const log = openLog(destDir)
+	await downloadListedFiles(files, destDir, onProgress, signal, catalog.headers(), log)
 	copyDir(path.join(tmp, 'overrides'), destDir)
 	copyDir(path.join(tmp, 'client-overrides'), destDir)
 	fs.rmSync(tmp, { recursive: true, force: true })
-	return { name: index.name, deps, format: 'mrpack' }
+	log.close()
+	return { name: index.name, deps, format: 'mrpack', files }
+}
+
+function cfHashes(info) {
+	const out = {}
+	for (const h of info.hashes || []) {
+		const val = String(h.value || '').toLowerCase()
+		if (!val) continue
+		if (Number(h.algo) === 1) out.sha1 = val
+		if (Number(h.algo) === 2) out.md5 = val
+	}
+	return out
 }
 
 function listedFromCfInfo(info, entry) {
 	const fileName = info.fileName || `file-${info.id}.jar`
 	const url = info.downloadUrl || ''
+	const blocked = !url
+	// downloadUrl=null значит API скрыл ссылку (allowModDistribution: false).
+	// Официальный CDN часто всё ещё отдаёт файл по имени — пробуем его,
+	// но без сторонних /download-зеркал: они 404 и путаются с «мод недоступен».
 	const urls = catalog.cfDownloadCandidates(
 		info.modId || entry.projectID || entry.projectId,
 		info.id,
 		fileName,
 		url,
+		{ includeMirrors: !blocked },
 	)
 	return {
 		path: path.posix.join('mods', fileName),
 		url: url || urls[0] || '',
 		urls,
 		size: info.fileLength || 0,
-		hashes: {},
+		hashes: cfHashes(info),
+		blocked,
+		fileName,
 		_id: info.id,
 	}
+}
+
+function blockedModError(f) {
+	const name = f.fileName || path.basename(f.path || '') || ('file-' + f._id)
+	return Object.assign(
+		new Error(`Автор запретил стороннее скачивание: ${name}. Скачай этот мод с CurseForge вручную и положи в папку mods.`),
+		{ retryable: false, blocked: true },
+	)
 }
 
 async function installCfZip(zipPath, destDir, apiKey, onProgress, signal) {
@@ -262,38 +343,56 @@ async function installCfZip(zipPath, destDir, apiKey, onProgress, signal) {
 				if (!info) continue
 				files.push(listedFromCfInfo(info, entry))
 			}
-		} catch (e) { /* качаем по зеркалам без имён файлов */ }
+		} catch (e) { /* ниже доберём по одному через зеркала */ }
 	}
 	if (files.length !== wanted.length) {
 		const have = new Set(files.map(f => f._id))
 		const rest = wanted.filter(e => !have.has(e.fileID || e.fileId))
+		let resolved = 0
 		reportWrap(onProgress, {
 			stage: 'pack',
 			stageLabel: 'CurseForge',
-			detail: `Файлы сборки ${rest.length}`,
-			percent: phasePercent('resolve', 1),
+			detail: `Файлы сборки 0 / ${rest.length}`,
+			percent: phasePercent('resolve', 0),
 		})
-		for (const entry of rest) {
+		// Без ключа POST /mods/files недоступен. Имена и CDN-ссылки берём GET-ом
+		// с зеркал — иначе остаются только .../download, а mcimirror на них отвечает 404.
+		await runPool(rest, 8, async (entry) => {
 			const modId = entry.projectID || entry.projectId
 			const fileId = entry.fileID || entry.fileId
-			const urls = catalog.cfDownloadCandidates(modId, fileId, '', '')
-			if (!urls.length) throw new Error(`Нет ссылки на ${modId}/${fileId}`)
-			files.push({
-				path: path.posix.join('mods', `cf-${modId}-${fileId}.jar`),
-				url: urls[0],
-				urls,
-				size: 0,
-				hashes: {},
-				_id: fileId,
+			let info = null
+			try { info = await catalog.getCfFile(modId, fileId, apiKey, signal) } catch (e) {}
+			if (info && (info.fileName || info.downloadUrl)) {
+				files.push(listedFromCfInfo(info, entry))
+			} else {
+				const urls = catalog.cfDownloadCandidates(modId, fileId, '', '')
+				if (!urls.length) throw new Error(`Нет ссылки на ${modId}/${fileId}`)
+				files.push({
+					path: path.posix.join('mods', `cf-${modId}-${fileId}.jar`),
+					url: urls[0],
+					urls,
+					size: 0,
+					hashes: {},
+					_id: fileId,
+				})
+			}
+			resolved++
+			reportWrap(onProgress, {
+				stage: 'pack',
+				stageLabel: 'CurseForge',
+				detail: `Файлы сборки ${resolved} / ${rest.length}`,
+				percent: phasePercent('resolve', rest.length ? resolved / rest.length : 1),
 			})
-		}
+		}, { signal })
 	}
 	fs.mkdirSync(destDir, { recursive: true })
-	await downloadListedFiles(files, destDir, onProgress, signal, catalog.headers(apiKey ? { 'x-api-key': apiKey } : {}))
+	const log = openLog(destDir)
+	await downloadListedFiles(files, destDir, onProgress, signal, catalog.headers(apiKey ? { 'x-api-key': apiKey } : {}), log)
 	const ov = man.overrides || 'overrides'
 	copyDir(path.join(tmp, ov), destDir)
 	fs.rmSync(tmp, { recursive: true, force: true })
-	return { name: man.name, deps, format: 'curseforge' }
+	log.close()
+	return { name: man.name, deps, format: 'curseforge', files }
 }
 
 function ftbRel(f) {
@@ -338,8 +437,10 @@ async function installFtbPack(paths, project, versionId, javaPath, onProgress, s
 		})
 	}
 	fs.mkdirSync(destDir, { recursive: true })
-	await downloadListedFiles(files, destDir, onProgress, signal, catalog.headers())
-	return { id, destDir, deps, name: project.title, packVersion: version.versionNumber || version.name, packVersionId: String(version.id) }
+	const log = openLog(destDir)
+	await downloadListedFiles(files, destDir, onProgress, signal, catalog.headers(), log)
+	log.close()
+	return { id, destDir, deps, name: project.title, packVersion: version.versionNumber || version.name, packVersionId: String(version.id), files }
 }
 
 async function installVanillaPack(paths, projectId, javaPath, onProgress, signal) {
@@ -401,6 +502,15 @@ async function finishInstall({ paths, source, project, unpacked, javaPath, onPro
 		const { PUBLIC_URL } = require('./hosts')
 		ensureSkinLoader(destDir, PUBLIC_URL, paths.games)
 	} catch (e) { /* skip */ }
+	await runPostInstallCheck({
+		paths,
+		destDir,
+		versionId: ensured.versionId,
+		minecraft: deps.minecraft,
+		files: unpacked.files || [],
+		packId: id,
+		onProgress,
+	})
 	reportWrap(onProgress, { stage: 'done', stageLabel: 'Готово', detail: meta.name, percent: 100 })
 	return { id, meta, dir: destDir }
 }
@@ -514,6 +624,15 @@ async function installPack({ paths, source, projectId, versionId, apiKey, javaPa
 	}
 	mclaunch.writeMeta(destDir, meta)
 	try { fs.unlinkSync(archivePath) } catch (e) {}
+	await runPostInstallCheck({
+		paths,
+		destDir,
+		versionId: ensured.versionId,
+		minecraft: deps.minecraft,
+		files: unpacked.files || [],
+		packId: id,
+		onProgress,
+	})
 	reportWrap(onProgress, { stage: 'done', stageLabel: 'Готово', detail: meta.name, percent: 100 })
 	return { id, meta, dir: destDir }
 }
@@ -682,6 +801,15 @@ async function installRecipe({ paths, client, apiKey, javaPath, onProgress }) {
 		const { PUBLIC_URL } = require('./hosts')
 		ensureSkinLoader(destDir, PUBLIC_URL, paths.games)
 	} catch (e) { /* skip */ }
+	await runPostInstallCheck({
+		paths,
+		destDir,
+		versionId: ensured.versionId,
+		minecraft,
+		files: [],
+		packId: id,
+		onProgress,
+	})
 	reportWrap(onProgress, { stage: 'done', stageLabel: 'Готово', detail: meta.name, percent: 100 })
 	return { id, meta, dir: destDir }
 }

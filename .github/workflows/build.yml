@@ -16,6 +16,8 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
+      - run: node scripts/run-tests.js
+      - run: node scripts/smoke-catalog.js
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:

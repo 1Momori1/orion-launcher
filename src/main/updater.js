@@ -147,7 +147,12 @@ class Updater {
 			].some(p => !fs.existsSync(p))
 			if (needFull || criticalMissing) {
 				const info = await this.getArchiveInfo(RUNTIME_PACK).catch(() => null)
-				result.steps.push({ id: 'runtime', label: 'Библиотеки Forge', bytes: info ? info.size : rtManifest.totalSize, mode: info ? 'archive' : 'files' })
+				result.steps.push({
+					id: 'runtime', label: 'Библиотеки Forge',
+					bytes: info ? info.size : rtManifest.totalSize,
+					sha256: info && info.sha256,
+					mode: info ? 'archive' : 'files',
+				})
 				result.totalBytes += info ? info.size : rtManifest.totalSize
 			}
 		}
@@ -160,7 +165,11 @@ class Updater {
 		if (!local) {
 			const info = await this.getArchiveInfo(modpackName).catch(() => null)
 			const bytes = info ? info.size : manifest.totalSize
-			result.steps.push({ id: 'pack', label: 'Сборка DeceasedCraft', bytes, mode: info ? 'archive' : 'files', fileCount: manifest.fileCount })
+			result.steps.push({
+				id: 'pack', label: 'Сборка DeceasedCraft', bytes,
+				sha256: info && info.sha256,
+				mode: info ? 'archive' : 'files', fileCount: manifest.fileCount,
+			})
 			result.totalBytes += bytes
 		} else {
 			const changed = this._diff(local, manifest)
@@ -342,7 +351,7 @@ class Updater {
 			const zip = path.join(this.paths.cache, '_runtime.zip')
 			emit({ detail: 'Скачиваю библиотеки Forge' }, true)
 			await downloadWithRetry(this._url(`/api/modpacks/${RUNTIME_PACK}/archive`), zip, {
-				expectedSize: step.bytes, signal, onChunk: countBytes,
+				expectedSize: step.bytes, expectedSha256: step.sha256 || null, signal, onChunk: countBytes,
 			})
 			emit({ detail: 'Распаковываю библиотеки' }, true)
 			// runtime содержит libraries/ и assets/ — кладём прямо в корень данных
@@ -382,7 +391,7 @@ class Updater {
 			const zip = path.join(this.paths.cache, `${modpackName}.zip`)
 			emit({ detail: 'Скачиваю сборку' }, true)
 			await downloadWithRetry(this._url(`/api/modpacks/${encodeURIComponent(modpackName)}/archive`), zip, {
-				expectedSize: step.bytes, signal, onChunk: countBytes,
+				expectedSize: step.bytes, expectedSha256: step.sha256 || null, signal, onChunk: countBytes,
 			})
 			emit({ detail: `Распаковываю ${step.fileCount || ''} файлов` }, true)
 			await extractZip(zip, dir, {

@@ -1,4 +1,5 @@
 const { fetchJson, downloadWithRetry } = require('./net')
+const { hostOf, sourceKind } = require('./fsutil')
 
 let appVersion = '1.7.0'
 try { appVersion = require('electron').app.getVersion() } catch (_) {}
@@ -8,9 +9,9 @@ const MIRROR_MAP = [
 	['https://api.modrinth.com', 'https://mod.mcimirror.top/modrinth', 'mirror'],
 	['https://cdn.modrinth.com', 'https://mod.mcimirror.top', 'mirror'],
 	['https://api.curseforge.com', 'https://mod.mcimirror.top/curseforge', 'mirror'],
-	['https://edge.forgecdn.net', 'https://mod.mcimirror.top', 'mirror'],
-	['https://mediafilez.forgecdn.net', 'https://mod.mcimirror.top', 'mirror'],
-	['https://media.forgecdn.net', 'https://mod.mcimirror.top', 'mirror'],
+	['https://edge.forgecdn.net', 'https://mod.mcimirror.top', 'fallback'],
+	['https://mediafilez.forgecdn.net', 'https://mod.mcimirror.top', 'fallback'],
+	['https://media.forgecdn.net', 'https://mod.mcimirror.top', 'fallback'],
 	['https://piston-meta.mojang.com', 'https://bmclapi2.bangbang93.com', 'fallback'],
 	['https://piston-data.mojang.com', 'https://bmclapi2.bangbang93.com', 'fallback'],
 	['https://launchermeta.mojang.com', 'https://bmclapi2.bangbang93.com', 'fallback'],
@@ -77,19 +78,27 @@ async function fetchJsonMirrored(url, opts = {}) {
 
 async function downloadWithRetryMirrored(url, destPath, opts = {}) {
 	const extra = opts.urls || []
-	const list = unique([...extra, ...candidates(url), url].filter(Boolean))
+	// Если вызывающий уже собрал явный список (CF CDN → зеркала), не дописываем
+	// path-rewrite mcimirror — у него другой путь и он только растягивает 404.
+	const list = extra.length
+		? unique([...extra, url].filter(Boolean))
+		: unique([...candidates(url), url].filter(Boolean))
 	let last = null
 	for (const u of list) {
 		try {
-			return await downloadWithRetry(u, destPath, {
+			await downloadWithRetry(u, destPath, {
 				...opts,
 				attempts: opts.attempts || 2,
 				stallMs: opts.stallMs || 15000,
 				headers: { ...headers(opts.headers || {}) },
 			})
+			const used = { usedUrl: u, host: hostOf(u), kind: sourceKind(u) }
+			if (opts.onSource) opts.onSource(used)
+			return used
 		} catch (e) {
 			if (e && e.cancelled) throw e
 			last = e
+			if (opts.onSourceFail) opts.onSourceFail({ url: u, host: hostOf(u), kind: sourceKind(u), error: e.message })
 		}
 	}
 	throw last || new Error('Не удалось скачать: ' + url)

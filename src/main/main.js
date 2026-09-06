@@ -205,6 +205,7 @@ ipcMain.handle('settings:save', (e, patch) => {
 	if (safe.theme && !THEMES.includes(safe.theme)) delete safe.theme
 	if (safe.catalogSource && !CATALOG_SOURCES.includes(safe.catalogSource)) delete safe.catalogSource
 	if (safe.onLaunch && !ON_LAUNCH.includes(safe.onLaunch)) delete safe.onLaunch
+	if (safe.updateChannel && !['stable', 'staff'].includes(safe.updateChannel)) delete safe.updateChannel
 	for (const k of ['showGrid', 'animateGrid', 'autoCheckUpdates', 'hideOnline', 'openAtLogin']) {
 		if (safe[k] != null) safe[k] = !!safe[k]
 	}
@@ -676,6 +677,30 @@ ipcMain.handle('launcher:version', () => ok({ version: app.getVersion() }))
 
 function builtinNews() {
 	return [
+		{
+			id: 'v1.8.9',
+			kind: 'launcher',
+			version: '1.8.9',
+			date: '2026-09-06',
+			title: '1.8.9 — OS Park и CurseForge',
+			body: 'Сборка Over Stars больше не падает с HTTP 404 на модах. Имена файлов берутся с зеркал, пробелы в ссылках кодируются.',
+		},
+		{
+			id: 'v1.8.8',
+			kind: 'launcher',
+			version: '1.8.8',
+			date: '2026-09-06',
+			title: '1.8.8 — проверка целого архива',
+			body: 'После докачки кусками сверяется хеш всего файла, а не только размер. Обрыв посреди записи больше не оставляет дырки.',
+		},
+		{
+			id: 'v1.8.7',
+			kind: 'launcher',
+			version: '1.8.7',
+			date: '2026-09-06',
+			title: '1.8.7 — крупные загрузки',
+			body: 'Большие файлы больше не зависают на половине. Сборка качается кусками с докачкой, обрыв не сбрасывает всё сначала.',
+		},
 		{
 			id: 'v1.8.6',
 			kind: 'launcher',
