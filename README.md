@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/1.8.9-white?style=flat-square&label=version&labelColor=111111" alt="1.8.9">
+  <img src="https://img.shields.io/badge/1.8.10-white?style=flat-square&label=version&labelColor=111111" alt="1.8.10">
   <img src="https://img.shields.io/badge/Windows%20x64-white?style=flat-square&label=platform&labelColor=111111" alt="Windows">
   <img src="https://img.shields.io/badge/MIT-white?style=flat-square&label=license&labelColor=111111" alt="MIT">
 </p>
@@ -35,7 +35,7 @@ npm start
 npm run build
 ```
 
-Файл появится здесь: `dist/Orion Launcher Setup 1.8.9.exe`
+Файл появится здесь: `dist/Orion Launcher Setup 1.8.10.exe`
 
 ## Репозиторий
 

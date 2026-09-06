@@ -678,6 +678,14 @@ ipcMain.handle('launcher:version', () => ok({ version: app.getVersion() }))
 function builtinNews() {
 	return [
 		{
+			id: 'v1.8.10',
+			kind: 'launcher',
+			version: '1.8.10',
+			date: '2026-09-06',
+			title: '1.8.10 — проверка перед Forge',
+			body: 'Перед запуском смотрит, лежит ли клиент под тем именем, которое ждёт Forge. Если нет — ошибка Orion, а не Crash Assistant.',
+		},
+		{
 			id: 'v1.8.9',
 			kind: 'launcher',
 			version: '1.8.9',
